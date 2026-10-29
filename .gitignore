@@ -1,0 +1,25 @@
+# Data — never commit the Home Credit dataset (Kaggle rules forbid redistribution)
+data/*.csv
+data/*.zip
+*.csv
+
+# Secrets
+.env
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Allow the placeholder files
+!models/.gitkeep
+!data/.gitkeep

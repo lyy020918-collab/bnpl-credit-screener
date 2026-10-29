@@ -132,6 +132,20 @@ AUC, not accuracy. On the **thin-file subset** (12% of applicants, 9.8% default
 rate) AUC is 0.748 versus 0.770 on the rest, showing thin-file applicants are
 genuinely harder to score — the problem this tool targets.
 
+## Performance
+
+The trained XGBoost model and preprocessing pipeline are loaded **once** and
+cached with Streamlit's `@st.cache_resource` (see `get_artifacts()` in
+`app.py`). Streamlit reruns the whole script on every widget change, so without
+caching the model would be deserialised from disk on each interaction. Caching
+keeps a single copy in memory, shared across reruns and users, so each click
+only runs inference — not a reload — which removes the main source of latency in
+the app.
+
+The app also gives visual feedback for every processing state: a spinner while
+the model loads, a spinner while scoring and while computing the explanation,
+and clear success / decline / error banners.
+
 ## Known issues & planned improvements
 
 - Uses only the main application table; AUC (~0.77) should rise after joining

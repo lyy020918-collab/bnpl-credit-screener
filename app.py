@@ -1,15 +1,35 @@
 """BNPL Credit Screener — Streamlit app.
 
-Scores a thin-file applicant's default risk with a gradient-boosting model and
-explains each decision. Run locally:  streamlit run app.py
+Scores a thin-file applicant's default risk with an XGBoost gradient-boosting
+model and explains each decision. Run locally:  streamlit run app.py
 """
-import os
+import pandas as pd
 import streamlit as st
+
+try:
+    import altair as alt
+    _HAS_ALT = True
+except Exception:  # noqa: BLE001
+    _HAS_ALT = False
 
 from src import config as C
 from src import predict as P
 
-st.set_page_config(page_title="BNPL Credit Screener", page_icon="💳", layout="centered")
+st.set_page_config(page_title="BNPL Credit Screener", page_icon="💳",
+                   layout="centered")
+
+
+# --------------------------------------------------------------------------
+# Performance optimisation: load the model + metadata ONCE and cache them.
+# The XGBoost model and preprocessing pipeline together are a few MB; loading
+# them on every rerun (every widget change) would add noticeable latency.
+# @st.cache_resource keeps a single copy in memory, shared across reruns and
+# across users, so each interaction only runs inference, not a reload.
+# --------------------------------------------------------------------------
+@st.cache_resource(show_spinner="Loading model…")
+def get_artifacts():
+    return P.load_artifacts()
+
 
 st.title("💳 BNPL Credit Screener")
 st.caption(
@@ -17,31 +37,44 @@ st.caption(
     "Do not enter real personal data."
 )
 
-# ---- Load model artifacts (graceful error if not trained yet) --------------
 try:
-    art = P.load_artifacts()
+    art = get_artifacts()
     meta = art["meta"]
-except Exception:
+    m = meta["metrics"]
+except Exception:  # noqa: BLE001
     st.error(
         "Model artifacts not found. Train the model first:\n\n"
         "`python -m src.train --data data/application_train.csv`"
     )
     st.stop()
 
-with st.expander("Model performance (held-out test set)", expanded=False):
-    m = meta["metrics"]
-    c1, c2, c3 = st.columns(3)
-    c1.metric("ROC-AUC (gradient boosting)", f"{m['hgb_auc']:.3f}")
-    c2.metric("ROC-AUC (logistic baseline)", f"{m['lr_auc']:.3f}")
-    c3.metric("Default rate", f"{m['default_rate']:.1%}")
+# ---- Sidebar: instructions + model summary --------------------------------
+with st.sidebar:
+    st.header("How to use")
+    st.markdown(
+        "1. Enter the applicant's details.\n"
+        "2. Click **Score applicant**.\n"
+        "3. Read the decision and the reasons behind it."
+    )
+    st.divider()
+    st.header("Model")
+    gb = meta.get("gb_name", "XGBoost")
+    st.metric(f"ROC-AUC ({gb})", f"{m['models'][gb]['auc']:.3f}")
+    st.metric("ROC-AUC (logistic baseline)", f"{m['models']['LogisticRegression']['auc']:.3f}")
+    st.metric("Thin-file subset ROC-AUC", f"{m['thin_file_auc']:.3f}")
     st.caption(
-        f"Majority-class accuracy is {m['majority_accuracy']:.1%}, which is why "
-        "accuracy is misleading under class imbalance and we report AUC instead."
+        f"Default rate {m['default_rate']:.1%}; majority-class accuracy "
+        f"{m['majority_accuracy']:.1%}. Accuracy is misleading under this class "
+        "imbalance, so we report AUC."
     )
 
-st.subheader("Applicant details")
+st.write(
+    "Enter an applicant below. The screener estimates default risk from "
+    "alternative and behavioural data, then explains the decision — useful for "
+    "**thin-file** applicants with little traditional credit history."
+)
 
-# ---- Build the input form --------------------------------------------------
+# ---- Input form -----------------------------------------------------------
 user_inputs = {}
 with st.form("applicant"):
     cols = st.columns(2)
@@ -57,46 +90,81 @@ with st.form("applicant"):
             user_inputs[col] = widget.number_input(
                 label, min_value=float(f["min"]), max_value=float(f["max"]),
                 value=float(f["default"]), step=float(f["step"]))
-    submitted = st.form_submit_button("Score applicant")
+    submitted = st.form_submit_button("Score applicant", type="primary")
 
-# ---- Score + explain -------------------------------------------------------
-if submitted:
-    # Basic input validation.
-    errors = []
-    if user_inputs["AMT_INCOME_TOTAL"] <= 0:
-        errors.append("Annual income must be greater than 0.")
-    if user_inputs["AMT_CREDIT"] <= 0:
-        errors.append("Credit amount must be greater than 0.")
-    if errors:
-        for e in errors:
-            st.warning(e)
-        st.stop()
+if not submitted:
+    st.stop()
 
-    try:
+# ---- Validate -------------------------------------------------------------
+errors = []
+if user_inputs["AMT_INCOME_TOTAL"] <= 0:
+    errors.append("Annual income must be greater than 0.")
+if user_inputs["AMT_CREDIT"] <= 0:
+    errors.append("Credit amount must be greater than 0.")
+if errors:
+    for e in errors:
+        st.warning(e)
+    st.stop()
+
+# ---- Score (loading state) ------------------------------------------------
+try:
+    with st.spinner("Scoring applicant…"):
         res = P.predict(user_inputs)
-    except Exception as e:  # noqa: BLE001
-        st.error(f"Scoring failed: {e}")
-        st.stop()
+except Exception as e:  # noqa: BLE001
+    st.error(f"Scoring failed: {e}")
+    st.stop()
 
-    proba, th, decision = res["proba"], res["threshold"], res["decision"]
-    st.subheader("Decision")
-    c1, c2 = st.columns(2)
-    c1.metric("Predicted default probability", f"{proba:.1%}")
-    c2.metric("Decision threshold", f"{th:.0%}")
-    if decision == "APPROVE":
-        st.success(f"**{decision}** — risk below the cost-sensitive threshold.")
-    else:
-        st.error(f"**{decision}** — risk at or above the cost-sensitive threshold.")
+proba, th, decision = res["proba"], res["threshold"], res["decision"]
 
-    st.subheader("Why this decision")
-    exp = P.explain(user_inputs)
-    st.caption(f"Explanation method: {exp['method']}. "
-               "Bars to the right push risk up; to the left, down.")
-    for label, val in exp["contributions"]:
-        direction = "🔴 increases risk" if val > 0 else "🟢 lowers risk"
-        st.write(f"- **{label}** — {direction}  ({val:+.3f})")
+st.subheader("Decision")
+c1, c2 = st.columns(2)
+c1.metric("Predicted default probability", f"{proba:.1%}")
+c2.metric("Decision threshold", f"{th:.0%}")
+st.progress(min(proba, 1.0))
+if decision == "APPROVE":
+    st.success(f"✅ **{decision}** — risk is below the cost-sensitive threshold.")
+else:
+    st.error(f"⛔ **{decision}** — risk is at or above the cost-sensitive threshold.")
 
-    st.info(
-        "This explanation is indicative. The model is a prototype trained on the "
-        "Home Credit dataset and must not be used for real credit decisions."
+# ---- Explain (loading state) ----------------------------------------------
+st.subheader("Why this decision")
+try:
+    with st.spinner("Computing explanation…"):
+        exp = P.explain(user_inputs)
+except Exception as e:  # noqa: BLE001
+    st.warning(f"Explanation unavailable: {e}")
+    st.stop()
+
+st.caption(
+    f"Method: {exp['method']}. Red bars push risk up; green bars push it down."
+)
+df = pd.DataFrame(exp["contributions"], columns=["feature", "contribution"])
+df["direction"] = df["contribution"].apply(
+    lambda v: "Increases risk" if v > 0 else "Lowers risk")
+
+if _HAS_ALT and len(df):
+    chart = (
+        alt.Chart(df)
+        .mark_bar()
+        .encode(
+            x=alt.X("contribution:Q", title="Impact on predicted risk"),
+            y=alt.Y("feature:N", sort="-x", title=None),
+            color=alt.Color(
+                "direction:N",
+                scale=alt.Scale(domain=["Increases risk", "Lowers risk"],
+                                range=["#d62728", "#2ca02c"]),
+                legend=None),
+            tooltip=["feature", alt.Tooltip("contribution:Q", format="+.3f")],
+        )
+        .properties(height=28 * len(df))
     )
+    st.altair_chart(chart, use_container_width=True)
+else:
+    for label, val in exp["contributions"]:
+        tag = "🔴 increases risk" if val > 0 else "🟢 lowers risk"
+        st.write(f"- **{label}** — {tag} ({val:+.3f})")
+
+st.info(
+    "This explanation is indicative. The model is a prototype trained on the "
+    "Home Credit dataset and must not be used for real credit decisions."
+)

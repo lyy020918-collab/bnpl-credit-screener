@@ -3,6 +3,9 @@ data/*.csv
 data/*.zip
 *.csv
 
+# Large model artifact not needed at runtime (app uses HGB); regenerate with src/train.py
+models/model_rf.joblib
+
 # Secrets
 .env
 .streamlit/secrets.toml

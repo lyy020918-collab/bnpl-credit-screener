@@ -11,12 +11,22 @@ just a score but *why*.
 ## Features
 
 - Default-risk score for a single applicant from an easy input form.
-- Two models trained and compared: an interpretable **Logistic Regression**
-  baseline and a stronger **HistGradientBoosting** main model.
+- **Three models trained and compared** against a majority-class baseline:
+  an interpretable **Logistic Regression**, a **Random Forest**, and a
+  **HistGradientBoosting** main model (best ROC-AUC).
+- **Feature engineering** on top of the raw table: credit/income and
+  annuity/income ratios, loan term, and external-score aggregates (mean, min,
+  max, and a count of how many external scores are present — the thin-file
+  signal).
+- **Thin-file focus**: performance is reported separately on the thin-file
+  subset (applicants with at most one external credit score), the population
+  the screener is meant to serve.
 - **Per-decision explanation** (SHAP when installed; a model-agnostic local
   fallback otherwise), tied to the applicant's own inputs.
 - A **cost-sensitive decision threshold** (a missed defaulter costs more than a
   wrongly rejected good applicant), not a naive 0.5 cut-off.
+- **Evaluation figures** generated at training time (ROC, precision-recall,
+  confusion matrix, calibration, permutation importance) saved to `figures/`.
 - Input validation and graceful error handling.
 
 ## Project structure
@@ -29,9 +39,11 @@ bnpl-credit-screener/
 ├── .env.example
 ├── src/
 │   ├── config.py       # paths, exposed input features, cost ratio
-│   ├── train.py        # trains + evaluates + saves artifacts
+│   ├── features.py     # feature engineering (shared by training + app)
+│   ├── train.py        # trains 3 models, evaluates, saves artifacts + figures
 │   └── predict.py      # load artifacts, score, explain
 ├── models/             # trained artifacts (committed so the app runs)
+├── figures/            # evaluation figures from the last training run
 └── data/               # dataset goes here — NOT committed
 ```
 
@@ -104,9 +116,23 @@ instead of committing them.
    pointing at `app.py`.
 3. Add any secrets under App → Settings → Secrets.
 
+## Results (held-out test set)
+
+| Model | ROC-AUC | PR-AUC |
+|---|---|---|
+| Logistic Regression | 0.752 | 0.235 |
+| Random Forest | 0.749 | 0.234 |
+| **HistGradientBoosting** | **0.766** | **0.256** |
+| Baseline (majority class) | 0.500 | 0.081 |
+
+Default rate is 8.1%, so majority-class accuracy is 91.9% — which is why we use
+AUC, not accuracy. On the **thin-file subset** (12% of applicants, 9.8% default
+rate) AUC is 0.737 versus 0.769 on the rest, showing thin-file applicants are
+genuinely harder to score — the problem this tool targets.
+
 ## Known issues & planned improvements
 
-- Uses only the main application table; AUC (~0.76) should rise after joining
+- Uses only the main application table; AUC (~0.77) should rise after joining
   the bureau / previous-application tables.
 - The cost ratio (`COST_FN:COST_FP`) in `src/config.py` is a first estimate and
   should be calibrated with realistic BNPL loss figures.

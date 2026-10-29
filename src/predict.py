@@ -2,18 +2,47 @@
 
 Explanation strategy:
   * If `shap` is installed (deployment / Colab), produce true SHAP values for the
-    single applicant over the features the app exposed.
-  * Otherwise fall back to a model-agnostic local importance: for each exposed
-    feature, measure how much the predicted probability moves when that feature
-    is reset to its training default. This needs no extra dependency and keeps
-    the app fully functional everywhere.
+    applicant and show the features that moved the decision most.
+  * Otherwise fall back to a model-agnostic local importance: reset each feature
+    to its training median and measure how far the predicted probability moves.
+    Needs no extra dependency, so the app stays fully functional everywhere.
 """
 from __future__ import annotations
 import joblib, numpy as np, pandas as pd
 
 from . import config as C
+from . import features as F
 
 _ARTIFACTS = None
+
+# Friendly names for the features most likely to appear in an explanation.
+LABELS = {
+    "EXT_SOURCE_MEAN": "External credit score (average)",
+    "EXT_SOURCE_1": "External credit score 1",
+    "EXT_SOURCE_2": "External credit score 2",
+    "EXT_SOURCE_3": "External credit score 3",
+    "EXT_SOURCE_MIN": "External credit score (lowest)",
+    "EXT_SOURCE_MAX": "External credit score (highest)",
+    "EXT_SOURCE_COUNT": "Number of external scores available",
+    "CREDIT_INCOME_RATIO": "Credit-to-income ratio",
+    "ANNUITY_INCOME_RATIO": "Annuity-to-income ratio",
+    "CREDIT_TERM": "Loan term (annuity / credit)",
+    "DAYS_EMPLOYED_PERC": "Share of life in current job",
+    "INCOME_PER_PERSON": "Income per household member",
+    "AMT_CREDIT": "Credit amount requested",
+    "AMT_INCOME_TOTAL": "Annual income",
+    "AMT_ANNUITY": "Loan annuity",
+    "DAYS_BIRTH": "Age",
+    "DAYS_EMPLOYED": "Employment length",
+    "NAME_EDUCATION_TYPE": "Education",
+    "NAME_FAMILY_STATUS": "Family status",
+    "NAME_INCOME_TYPE": "Income type",
+    "CODE_GENDER": "Gender",
+}
+
+
+def label(col: str) -> str:
+    return LABELS.get(col, col.replace("_", " ").title())
 
 
 def load_artifacts():
@@ -28,8 +57,8 @@ def load_artifacts():
 
 
 def build_feature_row(user_inputs: dict, meta: dict) -> pd.DataFrame:
-    """Turn the handful of app inputs into a full one-row feature frame."""
-    row = dict(meta["defaults"])  # start from training defaults
+    """Build a full one-row feature frame (raw defaults + inputs -> engineered)."""
+    row = {c: meta["defaults"][c] for c in meta["raw_cols"]}
     for f in C.EXPOSED_FEATURES:
         col, kind = f["col"], f["kind"]
         if col not in user_inputs:
@@ -41,8 +70,9 @@ def build_feature_row(user_inputs: dict, meta: dict) -> pd.DataFrame:
             row[col] = C.years_to_days_employed(val)
         else:
             row[col] = val
-    return pd.DataFrame([[row[c] for c in meta["feature_order"]]],
-                        columns=meta["feature_order"])
+    raw_df = pd.DataFrame([[row[c] for c in meta["raw_cols"]]], columns=meta["raw_cols"])
+    prepared = F.prepare(raw_df)
+    return prepared.reindex(columns=meta["feature_order"])
 
 
 def predict(user_inputs: dict):
@@ -56,47 +86,48 @@ def predict(user_inputs: dict):
 
 
 def explain(user_inputs: dict, top_k: int = 8):
-    """Return a list of (feature_label, signed_contribution) for the applicant."""
+    """Return {method, contributions:[(label, signed_value), ...]} for the applicant."""
     art = load_artifacts()
     meta = art["meta"]
     X1 = build_feature_row(user_inputs, meta)
-    labels = {f["col"]: f["label"] for f in C.EXPOSED_FEATURES}
-    exposed_cols = [f["col"] for f in C.EXPOSED_FEATURES]
-
     try:
-        return _shap_explain(art, meta, X1, exposed_cols, labels, top_k)
+        return _shap_explain(art, meta, X1, top_k)
     except Exception:
-        return _ablation_explain(art, meta, X1, exposed_cols, labels, top_k)
+        return _ablation_explain(art, meta, X1, top_k)
 
 
-def _shap_explain(art, meta, X1, exposed_cols, labels, top_k):
+def _shap_explain(art, meta, X1, top_k):
     import shap
     gb = art["hgb"]
     pre, model = gb.named_steps["pre"], gb.named_steps["clf"]
     cols = meta["cat_cols"] + [c for c in meta["feature_order"]
                                if c not in meta["cat_cols"]]
     bg = pre.transform(pd.DataFrame(
-        [[meta["defaults"][c] for c in meta["feature_order"]]],
-        columns=meta["feature_order"]))
+        [[meta["defaults"].get(c, meta["feature_medians"].get(c, 0))
+          for c in meta["raw_cols"]]], columns=meta["raw_cols"]).pipe(
+        lambda d: F.prepare(d).reindex(columns=meta["feature_order"])))
     explainer = shap.Explainer(model, bg)
     sv = explainer(pre.transform(X1))
     vals = np.array(sv.values).reshape(-1)
-    contrib = {cols[i]: float(vals[i]) for i in range(len(cols))}
-    pairs = [(labels[c], contrib.get(c, 0.0)) for c in exposed_cols]
+    pairs = [(label(cols[i]), float(vals[i])) for i in range(len(cols))]
     pairs.sort(key=lambda t: abs(t[1]), reverse=True)
     return {"method": "SHAP", "contributions": pairs[:top_k]}
 
 
-def _ablation_explain(art, meta, X1, exposed_cols, labels, top_k):
+def _ablation_explain(art, meta, X1, top_k):
     gb = art["hgb"]
     base = float(gb.predict_proba(X1)[:, 1][0])
+    medians = meta["feature_medians"]
     pairs = []
-    for col in exposed_cols:
+    for col in meta["num_cols"]:
+        if col not in medians:
+            continue
         X_mod = X1.copy()
-        X_mod[col] = meta["defaults"][col]
+        X_mod[col] = medians[col]
         p_mod = float(gb.predict_proba(X_mod)[:, 1][0])
-        # Positive contribution = this feature pushes risk UP vs the default.
-        pairs.append((labels[col], base - p_mod))
+        delta = base - p_mod          # + = pushes risk up vs a typical applicant
+        if abs(delta) > 1e-6:
+            pairs.append((label(col), delta))
     pairs.sort(key=lambda t: abs(t[1]), reverse=True)
     return {"method": "local ablation (install shap for full SHAP)",
             "contributions": pairs[:top_k]}

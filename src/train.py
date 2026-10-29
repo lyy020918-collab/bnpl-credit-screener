@@ -170,6 +170,10 @@ def main(data_path):
     _fig_confusion(yte, pred, gb_name, threshold)
     _fig_calibration(yte, app_p, gb_name)
     _fig_perm_importance(fitted[gb_name], Xte, yte, gb_name)
+    try:
+        _fig_shap(fitted[gb_name], Xtr, Xte, cat_cols, gb_name)
+    except Exception as e:  # noqa: BLE001
+        print(f"[shap] global summary skipped ({e}); install shap to generate it")
 
     # ---- Defaults for app inputs (on the cleaned RAW columns) ----
     cat_set = set(cat_cols)
@@ -272,6 +276,30 @@ def _fig_perm_importance(pipe, Xte, yte, name, n=5000, top=15):
     plt.xlabel("Drop in ROC-AUC when shuffled")
     plt.title(f"Permutation feature importance — {name}")
     plt.tight_layout(); plt.savefig(FIG_DIR / "feature_importance.png", dpi=130); plt.close()
+
+
+def _fig_shap(pipe, Xtr, Xte, cat_cols, name, n=2000, top=15):
+    """Global SHAP summary (beeswarm). Only runs when shap is installed."""
+    import shap
+    pre, model = pipe.named_steps["pre"], pipe.named_steps["clf"]
+    cols = cat_cols + [c for c in Xte.columns if c not in cat_cols]
+    Xt = pre.transform(Xte.iloc[:n])
+    # TreeExplainer is fast and robust for XGBoost / HistGradientBoosting;
+    # fall back to the generic Explainer if it is unavailable.
+    try:
+        explainer = shap.TreeExplainer(model)
+        sv = explainer.shap_values(Xt)
+    except Exception:  # noqa: BLE001
+        sv = shap.Explainer(model, pre.transform(Xtr.iloc[:n]))(Xt).values
+    if isinstance(sv, list):          # some versions return [class0, class1]
+        sv = sv[1]
+    plt.figure()
+    shap.summary_plot(sv, Xt, feature_names=cols, max_display=top, show=False)
+    plt.title(f"SHAP summary — {name}")
+    plt.tight_layout()
+    plt.savefig(FIG_DIR / "shap_summary.png", dpi=130, bbox_inches="tight")
+    plt.close()
+    print(f"[shap] wrote {FIG_DIR / 'shap_summary.png'}")
 
 
 if __name__ == "__main__":

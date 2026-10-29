@@ -123,17 +123,13 @@ instead of committing them.
 | Model | ROC-AUC | PR-AUC |
 |---|---|---|
 | Logistic Regression | 0.752 | 0.235 |
-| Random Forest | 0.749 | 0.234 |
-| **XGBoost (gradient boosting)** | **0.766** | **0.256** |
+| Random Forest | 0.748 | 0.234 |
+| **XGBoost (gradient boosting)** | **0.768** | **0.258** |
 | Baseline (majority class) | 0.500 | 0.081 |
-
-*(Gradient-boosting figures above are from the HistGradientBoosting fallback;
-re-run `python -m src.train` with `xgboost` installed, e.g. on Colab, to refresh
-them with XGBoost — the numbers are near-identical.)*
 
 Default rate is 8.1%, so majority-class accuracy is 91.9% — which is why we use
 AUC, not accuracy. On the **thin-file subset** (12% of applicants, 9.8% default
-rate) AUC is 0.737 versus 0.769 on the rest, showing thin-file applicants are
+rate) AUC is 0.748 versus 0.770 on the rest, showing thin-file applicants are
 genuinely harder to score — the problem this tool targets.
 
 ## Known issues & planned improvements

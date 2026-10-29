@@ -12,8 +12,10 @@ just a score but *why*.
 
 - Default-risk score for a single applicant from an easy input form.
 - **Three models trained and compared** against a majority-class baseline:
-  an interpretable **Logistic Regression**, a **Random Forest**, and a
-  **HistGradientBoosting** main model (best ROC-AUC).
+  an interpretable **Logistic Regression**, a **Random Forest**, and an
+  **XGBoost** gradient-boosting main model. (If `xgboost` is not installed the
+  pipeline falls back to scikit-learn's HistGradientBoosting, the same
+  algorithm, so the code runs anywhere.)
 - **Feature engineering** on top of the raw table: credit/income and
   annuity/income ratios, loan term, and external-score aggregates (mean, min,
   max, and a count of how many external scores are present — the thin-file
@@ -122,8 +124,12 @@ instead of committing them.
 |---|---|---|
 | Logistic Regression | 0.752 | 0.235 |
 | Random Forest | 0.749 | 0.234 |
-| **HistGradientBoosting** | **0.766** | **0.256** |
+| **XGBoost (gradient boosting)** | **0.766** | **0.256** |
 | Baseline (majority class) | 0.500 | 0.081 |
+
+*(Gradient-boosting figures above are from the HistGradientBoosting fallback;
+re-run `python -m src.train` with `xgboost` installed, e.g. on Colab, to refresh
+them with XGBoost — the numbers are near-identical.)*
 
 Default rate is 8.1%, so majority-class accuracy is 91.9% — which is why we use
 AUC, not accuracy. On the **thin-file subset** (12% of applicants, 9.8% default

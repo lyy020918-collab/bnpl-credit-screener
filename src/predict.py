@@ -49,7 +49,7 @@ def load_artifacts():
     global _ARTIFACTS
     if _ARTIFACTS is None:
         _ARTIFACTS = {
-            "hgb": joblib.load(C.MODEL_HGB),
+            "gb": joblib.load(C.MODEL_GB),
             "lr": joblib.load(C.MODEL_LR),
             "meta": joblib.load(C.METADATA),
         }
@@ -79,7 +79,7 @@ def predict(user_inputs: dict):
     art = load_artifacts()
     meta = art["meta"]
     X1 = build_feature_row(user_inputs, meta)
-    proba = float(art["hgb"].predict_proba(X1)[:, 1][0])
+    proba = float(art["gb"].predict_proba(X1)[:, 1][0])
     threshold = meta["threshold"]
     decision = "DECLINE / refer" if proba >= threshold else "APPROVE"
     return {"proba": proba, "threshold": threshold, "decision": decision, "X1": X1}
@@ -98,7 +98,7 @@ def explain(user_inputs: dict, top_k: int = 8):
 
 def _shap_explain(art, meta, X1, top_k):
     import shap
-    gb = art["hgb"]
+    gb = art["gb"]
     pre, model = gb.named_steps["pre"], gb.named_steps["clf"]
     cols = meta["cat_cols"] + [c for c in meta["feature_order"]
                                if c not in meta["cat_cols"]]
@@ -115,7 +115,7 @@ def _shap_explain(art, meta, X1, top_k):
 
 
 def _ablation_explain(art, meta, X1, top_k):
-    gb = art["hgb"]
+    gb = art["gb"]
     base = float(gb.predict_proba(X1)[:, 1][0])
     medians = meta["feature_medians"]
     pairs = []

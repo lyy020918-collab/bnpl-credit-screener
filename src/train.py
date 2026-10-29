@@ -37,7 +37,35 @@ from . import features as F
 FIG_DIR = C.ROOT / "figures"
 
 
-def build_models(num_cols, cat_cols, cat_mask):
+def _make_gb(cat_cols, num_cols, cat_mask, scale_pos_weight):
+    """Main gradient-boosting model: XGBoost if installed, else HistGradientBoosting.
+
+    Both are gradient boosting (the method taught in the course). XGBoost is the
+    intended model; the HistGradientBoosting fallback lets the pipeline run in
+    environments where xgboost is not installed, so the code is always testable.
+    Returns (name, pipeline).
+    """
+    # Ordinal-encode categoricals for both; both handle missing numerics natively.
+    pre = ColumnTransformer(
+        [("cat", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1,
+                                encoded_missing_value=np.nan), cat_cols)],
+        remainder="passthrough")
+    try:
+        from xgboost import XGBClassifier
+        clf = XGBClassifier(
+            n_estimators=400, learning_rate=0.05, max_depth=6,
+            subsample=0.8, colsample_bytree=0.8, reg_lambda=1.0,
+            scale_pos_weight=scale_pos_weight, eval_metric="auc",
+            tree_method="hist", random_state=42, n_jobs=-1)
+        return "XGBoost", Pipeline([("pre", pre), ("clf", clf)])
+    except Exception:
+        clf = HistGradientBoostingClassifier(
+            max_iter=400, learning_rate=0.05, l2_regularization=1.0,
+            categorical_features=cat_mask, class_weight="balanced", random_state=42)
+        return "HistGradientBoosting", Pipeline([("pre", pre), ("clf", clf)])
+
+
+def build_models(num_cols, cat_cols, cat_mask, scale_pos_weight):
     # Logistic Regression: impute + scale numerics, one-hot categoricals.
     num_lr = Pipeline([("imp", SimpleImputer(strategy="median")),
                        ("sc", StandardScaler())])
@@ -58,17 +86,9 @@ def build_models(num_cols, cat_cols, cat_mask):
                        n_estimators=150, max_depth=14, min_samples_leaf=40,
                        n_jobs=-1, class_weight="balanced", random_state=42))])
 
-    # HistGradientBoosting: ordinal cats (native NaN handling for numerics).
-    pre_gb = ColumnTransformer(
-        [("cat", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1,
-                                encoded_missing_value=-1), cat_cols)],
-        remainder="passthrough")
-    gb = Pipeline([("pre", pre_gb),
-                   ("clf", HistGradientBoostingClassifier(
-                       max_iter=400, learning_rate=0.05, l2_regularization=1.0,
-                       categorical_features=cat_mask, class_weight="balanced",
-                       random_state=42))])
-    return {"LogisticRegression": lr, "RandomForest": rf, "HistGradientBoosting": gb}
+    # Main gradient-boosting model (XGBoost if available, else HistGradientBoosting).
+    gb_name, gb = _make_gb(cat_cols, num_cols, cat_mask, scale_pos_weight)
+    return {"LogisticRegression": lr, "RandomForest": rf, gb_name: gb}, gb_name
 
 
 def cost_sensitive_threshold(y_true, proba):
@@ -104,7 +124,8 @@ def main(data_path):
     Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, stratify=y,
                                           random_state=42)
 
-    models = build_models(num_cols, cat_cols, cat_mask)
+    scale_pos_weight = float((ytr == 0).sum() / max((ytr == 1).sum(), 1))
+    models, gb_name = build_models(num_cols, cat_cols, cat_mask, scale_pos_weight)
     proba, fitted = {}, {}
     for name, pipe in models.items():
         print(f"training {name} ...")
@@ -125,30 +146,30 @@ def main(data_path):
             "pr_auc": float(average_precision_score(yte, p)),
         }
 
-    # Best of the three real models = app's main model.
-    real = ["LogisticRegression", "RandomForest", "HistGradientBoosting"]
-    best_name = max(real, key=lambda n: metrics["models"][n]["auc"])
-    best_p = proba[best_name]
-    threshold = cost_sensitive_threshold(yte, best_p)
-    pred = (best_p >= threshold).astype(int)
-    metrics["best_model"] = best_name
+    real = ["LogisticRegression", "RandomForest", gb_name]
+    metrics["best_model"] = max(real, key=lambda n: metrics["models"][n]["auc"])
+
+    # The app always uses the gradient-boosting model, so tune the threshold and
+    # report the thin-file performance on that model.
+    app_p = proba[gb_name]
+    threshold = cost_sensitive_threshold(yte, app_p)
+    pred = (app_p >= threshold).astype(int)
     metrics["threshold"] = threshold
     metrics["recall_at_threshold"] = float(recall_score(yte, pred))
     metrics["approval_rate"] = float((pred == 0).mean())
 
-    # Thin-file subset performance (best model).
     thin = F.thin_file_mask(Xte).values
     metrics["thin_file_share"] = float(thin.mean())
-    metrics["thin_file_auc"] = float(roc_auc_score(yte[thin], best_p[thin]))
-    metrics["non_thin_file_auc"] = float(roc_auc_score(yte[~thin], best_p[~thin]))
+    metrics["thin_file_auc"] = float(roc_auc_score(yte[thin], app_p[thin]))
+    metrics["non_thin_file_auc"] = float(roc_auc_score(yte[~thin], app_p[~thin]))
     metrics["thin_file_default_rate"] = float(yte[thin].mean())
 
     # ---- Figures ----
     _fig_roc(yte, proba, real)
     _fig_pr(yte, proba, real)
-    _fig_confusion(yte, pred, best_name, threshold)
-    _fig_calibration(yte, best_p, best_name)
-    _fig_perm_importance(fitted[best_name], Xte, yte, best_name)
+    _fig_confusion(yte, pred, gb_name, threshold)
+    _fig_calibration(yte, app_p, gb_name)
+    _fig_perm_importance(fitted[gb_name], Xte, yte, gb_name)
 
     # ---- Defaults for app inputs (on the cleaned RAW columns) ----
     cat_set = set(cat_cols)
@@ -165,9 +186,11 @@ def main(data_path):
     # neutral baseline when explaining a single decision without shap.
     feature_medians = {c: float(X[c].median()) for c in num_cols}
 
-    joblib.dump(fitted["HistGradientBoosting"], C.MODEL_HGB)
+    # Save the gradient-boosting model under a generic path so predict.py loads
+    # it regardless of implementation (XGBoost or the HistGradientBoosting fallback).
+    joblib.dump(fitted[gb_name], C.MODEL_GB)
     joblib.dump(fitted["LogisticRegression"], C.MODEL_LR)
-    joblib.dump(fitted["RandomForest"], C.MODELS_DIR / "model_rf.joblib")
+    joblib.dump(fitted["RandomForest"], C.MODEL_RF)
     joblib.dump({
         "feature_order": feature_order,
         "raw_cols": raw_cols,
@@ -178,7 +201,8 @@ def main(data_path):
         "categories": categories,
         "feature_medians": feature_medians,
         "threshold": threshold,
-        "best_model": best_name,
+        "gb_name": gb_name,
+        "best_model": metrics["best_model"],
         "metrics": metrics,
     }, C.METADATA)
 

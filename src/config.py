@@ -16,8 +16,10 @@ MODELS_DIR = ROOT / "models"
 # Default dataset location (not committed to the repo — see README / .gitignore).
 DATA_FILE = DATA_DIR / "application_train.csv"
 
-MODEL_HGB = MODELS_DIR / "model_hgb.joblib"
+# Main gradient-boosting model (XGBoost when available, else HistGradientBoosting).
+MODEL_GB = MODELS_DIR / "model_gb.joblib"
 MODEL_LR = MODELS_DIR / "model_lr.joblib"
+MODEL_RF = MODELS_DIR / "model_rf.joblib"
 METADATA = MODELS_DIR / "metadata.joblib"
 
 TARGET = "TARGET"

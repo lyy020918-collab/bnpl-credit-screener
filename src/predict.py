@@ -111,18 +111,57 @@ def predict(user_inputs: dict, thin_file: bool = False, risk_ratio=None):
     return {"proba": proba, "threshold": threshold, "decision": decision, "X1": X1}
 
 
-def explain(user_inputs: dict, top_k: int = 8):
-    """Return {method, contributions:[(label, signed_value), ...]} for the applicant."""
+# The three raw bureau scores and their summary stats are near-duplicates of one
+# signal, so a per-feature explanation splits that signal across several bars
+# whose values can even contradict each other (a multicollinearity artefact). We
+# therefore sum them into ONE "external credit score" contribution, which is
+# valid because SHAP contributions are additive. EXT_SOURCE_COUNT is kept
+# separate — "how many external scores exist" is a distinct, meaningful signal
+# (it is 0 for a thin-file applicant).
+_EXT_SCORE_GROUP = {"EXT_SOURCE_1", "EXT_SOURCE_2", "EXT_SOURCE_3",
+                    "EXT_SOURCE_MEAN", "EXT_SOURCE_MIN", "EXT_SOURCE_MAX",
+                    "EXT_SOURCE_STD"}
+
+
+def explain(user_inputs: dict, top_k: int = 8, thin_file: bool = False):
+    """Return {method, contributions:[(label, signed_value), ...]} for the applicant.
+
+    The external-score features are collapsed into a single contribution (see
+    _EXT_SCORE_GROUP). When thin_file is True the applicant gave no external
+    score, so that single bar is labelled accordingly and the remaining bars show
+    the alternative-data features the decision actually rested on.
+    """
     art = load_artifacts()
     meta = art["meta"]
     X1 = build_feature_row(user_inputs, meta)
     try:
-        return _shap_explain(art, meta, X1, top_k)
+        method, raw_pairs = _shap_contributions(art, meta, X1)
     except Exception:
-        return _ablation_explain(art, meta, X1, top_k)
+        method, raw_pairs = _ablation_contributions(art, meta, X1)
+    return {"method": method,
+            "contributions": _group_and_rank(raw_pairs, thin_file, top_k)}
 
 
-def _shap_explain(art, meta, X1, top_k):
+def _group_and_rank(raw_pairs, thin_file, top_k):
+    """Collapse the external-score family into one bar, then label, sort, trim."""
+    ext_sum, has_ext = 0.0, False
+    others = []
+    for col, val in raw_pairs:
+        if col in _EXT_SCORE_GROUP:
+            ext_sum += val
+            has_ext = True
+        else:
+            others.append((label(col), val))
+    if has_ext and abs(ext_sum) > 1e-6:
+        ext_label = ("External credit score (not provided)" if thin_file
+                     else "External credit score")
+        others.append((ext_label, ext_sum))
+    others.sort(key=lambda t: abs(t[1]), reverse=True)
+    return others[:top_k]
+
+
+def _shap_contributions(art, meta, X1):
+    """Per-feature SHAP values as [(raw_col_name, signed_value), ...]."""
     import shap
     gb = art["gb"]
     pre, model = gb.named_steps["pre"], gb.named_steps["clf"]
@@ -135,12 +174,12 @@ def _shap_explain(art, meta, X1, top_k):
     explainer = shap.Explainer(model, bg)
     sv = explainer(pre.transform(X1))
     vals = np.array(sv.values).reshape(-1)
-    pairs = [(label(cols[i]), float(vals[i])) for i in range(len(cols))]
-    pairs.sort(key=lambda t: abs(t[1]), reverse=True)
-    return {"method": "SHAP", "contributions": pairs[:top_k]}
+    pairs = [(cols[i], float(vals[i])) for i in range(len(cols))]
+    return "SHAP", pairs
 
 
-def _ablation_explain(art, meta, X1, top_k):
+def _ablation_contributions(art, meta, X1):
+    """Model-agnostic fallback: effect of resetting each feature to its median."""
     gb = art["gb"]
     base = float(gb.predict_proba(X1)[:, 1][0])
     medians = meta["feature_medians"]
@@ -153,7 +192,5 @@ def _ablation_explain(art, meta, X1, top_k):
         p_mod = float(gb.predict_proba(X_mod)[:, 1][0])
         delta = base - p_mod          # + = pushes risk up vs a typical applicant
         if abs(delta) > 1e-6:
-            pairs.append((label(col), delta))
-    pairs.sort(key=lambda t: abs(t[1]), reverse=True)
-    return {"method": "local ablation (install shap for full SHAP)",
-            "contributions": pairs[:top_k]}
+            pairs.append((col, delta))
+    return "local ablation (install shap for full SHAP)", pairs

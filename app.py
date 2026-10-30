@@ -196,7 +196,7 @@ if cell:
 st.subheader("Why this decision")
 try:
     with st.spinner("Computing explanation…"):
-        exp = P.explain(user_inputs)
+        exp = P.explain(user_inputs, thin_file=not has_ext)
 except Exception as e:  # noqa: BLE001
     st.warning(f"Explanation unavailable: {e}")
     st.stop()

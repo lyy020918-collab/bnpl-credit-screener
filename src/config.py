@@ -31,6 +31,15 @@ DROP_COLS = ["TARGET", "SK_ID_CURR"]
 COST_FN = 5.0
 COST_FP = 1.0
 
+# Risk-appetite grid. The app exposes these cost ratios (C_FN : C_FP) as a
+# slider so a risk officer can trade off approving good customers against
+# catching defaulters. At training time we precompute the cost-optimal decision
+# threshold for every ratio (both for the full population and for the thin-file
+# "no external score" regime) and store it in metadata, so the app can look up a
+# threshold for any slider position without needing the test data at runtime.
+RISK_RATIOS = [5, 8, 10, 12, 15]
+DEFAULT_RISK_RATIO = 10
+
 # ---------------------------------------------------------------------------
 # Features the app asks the user for. Each entry drives one input widget.
 #   kind: "number" | "category" | "age_years" | "employ_years"

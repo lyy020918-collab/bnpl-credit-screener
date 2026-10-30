@@ -81,12 +81,32 @@ def build_feature_row(user_inputs: dict, meta: dict) -> pd.DataFrame:
     return prepared.reindex(columns=meta["feature_order"])
 
 
-def predict(user_inputs: dict):
+def resolve_threshold(meta: dict, thin_file: bool = False, risk_ratio=None) -> float:
+    """Pick the decision threshold for the active mode and risk appetite.
+
+    The risk-appetite grid (cost ratio -> cost-optimal threshold) is precomputed
+    at training time for both the full population and the thin-file "no external
+    score" regime. We look up the requested ratio; if the grid or the ratio is
+    missing we fall back to the stored default threshold for the mode.
+    """
+    regime = "thin_file" if thin_file else "global"
+    grid = meta.get("threshold_grid", {}).get(regime, {})
+    if risk_ratio is None:
+        risk_ratio = meta.get("default_risk_ratio")
+    if grid and str(risk_ratio) in grid:
+        return float(grid[str(risk_ratio)]["threshold"])
+    # Fallbacks for an older metadata file without the grid.
+    if thin_file and "thin_file_threshold" in meta:
+        return float(meta["thin_file_threshold"])
+    return float(meta["threshold"])
+
+
+def predict(user_inputs: dict, thin_file: bool = False, risk_ratio=None):
     art = load_artifacts()
     meta = art["meta"]
     X1 = build_feature_row(user_inputs, meta)
     proba = float(art["gb"].predict_proba(X1)[:, 1][0])
-    threshold = meta["threshold"]
+    threshold = resolve_threshold(meta, thin_file=thin_file, risk_ratio=risk_ratio)
     decision = "DECLINE / refer" if proba >= threshold else "APPROVE"
     return {"proba": proba, "threshold": threshold, "decision": decision, "X1": X1}
 

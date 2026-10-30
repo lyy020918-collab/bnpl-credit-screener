@@ -72,6 +72,22 @@ with st.sidebar:
         "imbalance, so we report AUC."
     )
 
+    st.divider()
+    st.header("Risk appetite")
+    # The decision threshold is not fixed: a stricter cost ratio (missing a
+    # defaulter costs more) lowers the threshold, so the app declines more of the
+    # riskier applicants. The grid of thresholds was tuned at training time.
+    ratios = meta.get("risk_ratios", [C.COST_FN]) or [5]
+    default_ratio = meta.get("default_risk_ratio", ratios[0])
+    risk_ratio = st.select_slider(
+        "Cost of missing a defaulter : rejecting a good customer",
+        options=ratios,
+        value=default_ratio if default_ratio in ratios else ratios[0],
+        format_func=lambda r: f"{r}:1",
+        help="Lower = lenient (approve more). Higher = strict (reject more to "
+             "catch more defaulters). Moving this re-tunes the decision cut.",
+    )
+
 st.write(
     "Enter an applicant below. The screener estimates default risk from "
     "alternative and behavioural data, then explains the decision — useful for "
@@ -148,7 +164,7 @@ if errors:
 # ---- Score (loading state) ------------------------------------------------
 try:
     with st.spinner("Scoring applicant…"):
-        res = P.predict(user_inputs)
+        res = P.predict(user_inputs, thin_file=not has_ext, risk_ratio=risk_ratio)
 except Exception as e:  # noqa: BLE001
     st.error(f"Scoring failed: {e}")
     st.stop()
@@ -164,6 +180,17 @@ if decision == "APPROVE":
     st.success(f"✅ **{decision}** — risk is below the cost-sensitive threshold.")
 else:
     st.error(f"⛔ **{decision}** — risk is at or above the cost-sensitive threshold.")
+
+# How this risk-appetite setting behaves on the test set, for the active regime.
+regime = "thin_file" if not has_ext else "global"
+cell = m.get("threshold_grid", {}).get(regime, {}).get(str(risk_ratio))
+if cell:
+    pop = "thin-file applicants" if not has_ext else "all applicants"
+    st.caption(
+        f"At a {risk_ratio}:1 risk appetite, on the test set this threshold "
+        f"approves {cell['approval_rate']:.0%} of {pop} and catches "
+        f"{cell['recall']:.0%} of the defaulters among them."
+    )
 
 # ---- Explain (loading state) ----------------------------------------------
 st.subheader("Why this decision")

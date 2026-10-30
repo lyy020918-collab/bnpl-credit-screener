@@ -91,14 +91,18 @@ def build_models(num_cols, cat_cols, cat_mask, scale_pos_weight):
     return {"LogisticRegression": lr, "RandomForest": rf, gb_name: gb}, gb_name
 
 
-def cost_sensitive_threshold(y_true, proba):
+def cost_sensitive_threshold(y_true, proba, c_fn=None, c_fp=None):
+    """Threshold that minimises expected cost. c_fn:c_fp is the cost of missing a
+    defaulter vs. wrongly rejecting a good applicant; defaults to the config ratio."""
+    c_fn = C.COST_FN if c_fn is None else c_fn
+    c_fp = C.COST_FP if c_fp is None else c_fp
     ths = np.linspace(0.01, 0.99, 99)
     best_th, best_cost = 0.5, np.inf
     for th in ths:
         pred = (proba >= th).astype(int)
         fn = ((pred == 0) & (y_true == 1)).sum()
         fp = ((pred == 1) & (y_true == 0)).sum()
-        cost = C.COST_FN * fn + C.COST_FP * fp
+        cost = c_fn * fn + c_fp * fp
         if cost < best_cost:
             best_cost, best_th = cost, th
     return float(best_th)
@@ -152,17 +156,52 @@ def main(data_path):
     # The app always uses the gradient-boosting model, so tune the threshold and
     # report the thin-file performance on that model.
     app_p = proba[gb_name]
-    threshold = cost_sensitive_threshold(yte, app_p)
-    pred = (app_p >= threshold).astype(int)
-    metrics["threshold"] = threshold
-    metrics["recall_at_threshold"] = float(recall_score(yte, pred))
-    metrics["approval_rate"] = float((pred == 0).mean())
 
     thin = F.thin_file_mask(Xte).values
     metrics["thin_file_share"] = float(thin.mean())
     metrics["thin_file_auc"] = float(roc_auc_score(yte[thin], app_p[thin]))
     metrics["non_thin_file_auc"] = float(roc_auc_score(yte[~thin], app_p[~thin]))
     metrics["thin_file_default_rate"] = float(yte[thin].mean())
+
+    # Thin-file probabilities: simulate the app's "no external score" mode on the
+    # whole test set (force all external scores missing, recompute features). The
+    # threshold tuned on applicants who mostly HAVE external scores is too lenient
+    # when none are present, so thin-file decisions get their own threshold.
+    raw_te = Xte.drop(columns=[c for c in F.ENGINEERED if c in Xte.columns])
+    for c in F.EXT_COLS:
+        raw_te[c] = np.nan
+    Xte_tf = F.add_features(raw_te).reindex(columns=feature_order)
+    p_tf = fitted[gb_name].predict_proba(Xte_tf)[:, 1]
+
+    # Risk-appetite grid: for every cost ratio the app's slider exposes, store the
+    # cost-optimal threshold for the full population and for the thin-file regime,
+    # plus the approval rate / recall each one yields (handy for the report). The
+    # app looks these up at runtime instead of re-tuning on data it does not have.
+    def _summary(y_true, p, th):
+        pr = (p >= th).astype(int)
+        return {"threshold": round(th, 4),
+                "approval_rate": float((pr == 0).mean()),
+                "recall": float(recall_score(y_true, pr))}
+
+    grid = {"global": {}, "thin_file": {}}
+    for r in C.RISK_RATIOS:
+        grid["global"][str(r)] = _summary(yte, app_p, cost_sensitive_threshold(yte, app_p, r))
+        grid["thin_file"][str(r)] = _summary(yte, p_tf, cost_sensitive_threshold(yte, p_tf, r))
+    metrics["threshold_grid"] = grid
+    metrics["risk_ratios"] = C.RISK_RATIOS
+    metrics["default_risk_ratio"] = C.DEFAULT_RISK_RATIO
+
+    # Defaults the app starts at (the slider's default position).
+    dr = str(C.DEFAULT_RISK_RATIO)
+    threshold = grid["global"][dr]["threshold"]
+    thin_threshold = grid["thin_file"][dr]["threshold"]
+    pred = (app_p >= threshold).astype(int)
+    metrics["threshold"] = threshold
+    metrics["recall_at_threshold"] = grid["global"][dr]["recall"]
+    metrics["approval_rate"] = grid["global"][dr]["approval_rate"]
+    metrics["thin_file_threshold"] = thin_threshold
+    metrics["thin_file_recall_at_threshold"] = grid["thin_file"][dr]["recall"]
+    metrics["thin_file_approval_rate"] = grid["thin_file"][dr]["approval_rate"]
 
     # ---- Figures ----
     _fig_roc(yte, proba, real)
@@ -205,6 +244,10 @@ def main(data_path):
         "categories": categories,
         "feature_medians": feature_medians,
         "threshold": threshold,
+        "thin_file_threshold": thin_threshold,
+        "threshold_grid": metrics["threshold_grid"],
+        "risk_ratios": C.RISK_RATIOS,
+        "default_risk_ratio": C.DEFAULT_RISK_RATIO,
         "gb_name": gb_name,
         "best_model": metrics["best_model"],
         "metrics": metrics,

@@ -1,9 +1,13 @@
-streamlit>=1.37,<2
-scikit-learn>=1.4,<2
-xgboost>=2.0
-pandas>=2.0
-numpy>=1.26
-joblib>=1.3
-shap>=0.44
-matplotlib>=3.7
-python-dotenv>=1.0
+# Pinned to match the deployment environment so the model pickle (created with
+# the same versions) loads reliably. Retrain the model with these exact versions
+# (pip install -r requirements.txt) before deploying.
+streamlit==1.66.1
+scikit-learn==1.9.1
+xgboost==3.4.1
+shap==0.54.1
+pandas==3.1.0
+numpy==2.5.4
+matplotlib==3.11.2
+altair==6.3.0
+joblib==1.6.0
+python-dotenv==1.2.4

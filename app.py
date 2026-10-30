@@ -41,11 +41,15 @@ try:
     art = get_artifacts()
     meta = art["meta"]
     m = meta["metrics"]
-except Exception:  # noqa: BLE001
+except FileNotFoundError:
     st.error(
         "Model artifacts not found. Train the model first:\n\n"
         "`python -m src.train --data data/application_train.csv`"
     )
+    st.stop()
+except Exception as e:  # noqa: BLE001
+    st.error("Could not load the model — details below:")
+    st.exception(e)
     st.stop()
 
 # ---- Sidebar: instructions + model summary --------------------------------

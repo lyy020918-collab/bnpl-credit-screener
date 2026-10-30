@@ -70,6 +70,12 @@ def build_feature_row(user_inputs: dict, meta: dict) -> pd.DataFrame:
             row[col] = C.years_to_days_employed(val)
         else:
             row[col] = val
+    # Honour overrides for non-exposed raw columns too (e.g. EXT_SOURCE_1 set to
+    # missing when the applicant has no external bureau scores — the thin-file case).
+    exposed = {f["col"] for f in C.EXPOSED_FEATURES}
+    for col, val in user_inputs.items():
+        if col not in exposed and col in meta["raw_cols"]:
+            row[col] = val
     raw_df = pd.DataFrame([[row[c] for c in meta["raw_cols"]]], columns=meta["raw_cols"])
     prepared = F.prepare(raw_df)
     return prepared.reindex(columns=meta["feature_order"])

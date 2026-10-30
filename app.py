@@ -78,23 +78,48 @@ st.write(
     "**thin-file** applicants with little traditional credit history."
 )
 
+# ---- External-scores toggle (the thin-file switch) ------------------------
+# External bureau scores are the strongest predictors, but thin-file applicants
+# often have none. Unchecking this scores the applicant on alternative data only.
+EXT_INPUTS = ("EXT_SOURCE_2", "EXT_SOURCE_3")
+has_ext = st.checkbox(
+    "Applicant has external credit-bureau scores",
+    value=True,
+    help="External bureau scores (0–1, higher = lower risk) are the strongest "
+         "predictors. Thin-file applicants often have none — uncheck to score "
+         "the applicant on alternative and behavioural data only.",
+)
+if not has_ext:
+    st.info("Scoring as a **thin-file** applicant — no external bureau scores available.")
+
 # ---- Input form -----------------------------------------------------------
 user_inputs = {}
 with st.form("applicant"):
     cols = st.columns(2)
-    for i, f in enumerate(C.EXPOSED_FEATURES):
-        widget = cols[i % 2]
+    slot = 0
+    for f in C.EXPOSED_FEATURES:
         col, kind, label = f["col"], f["kind"], f["label"]
+        if col in EXT_INPUTS and not has_ext:
+            continue  # hidden; set to missing after the form
+        widget = cols[slot % 2]
+        slot += 1
         if kind == "category":
             choices = meta["categories"].get(col, [])
             default = meta["defaults"].get(col)
             idx = choices.index(default) if default in choices else 0
             user_inputs[col] = widget.selectbox(label, choices, index=idx)
         else:
+            help_txt = ("External bureau score, 0–1 (higher = lower risk)."
+                        if col in EXT_INPUTS else None)
             user_inputs[col] = widget.number_input(
                 label, min_value=float(f["min"]), max_value=float(f["max"]),
-                value=float(f["default"]), step=float(f["step"]))
+                value=float(f["default"]), step=float(f["step"]), help=help_txt)
     submitted = st.form_submit_button("Score applicant", type="primary")
+
+# No external scores → represent a true thin-file applicant: all three missing.
+if not has_ext:
+    for c in ("EXT_SOURCE_1", "EXT_SOURCE_2", "EXT_SOURCE_3"):
+        user_inputs[c] = float("nan")
 
 if not submitted:
     st.stop()

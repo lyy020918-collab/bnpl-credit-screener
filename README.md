@@ -23,10 +23,19 @@ just a score but *why*.
 - **Thin-file focus**: performance is reported separately on the thin-file
   subset (applicants with at most one external credit score), the population
   the screener is meant to serve.
+- **Thin-file mode**: a toggle to score an applicant with *no* external credit
+  score, on alternative and behavioural data only — the core use case.
 - **Per-decision explanation** (SHAP when installed; a model-agnostic local
-  fallback otherwise), tied to the applicant's own inputs.
+  fallback otherwise), tied to the applicant's own inputs. The three bureau
+  scores and their summary stats are collapsed into one "external credit score"
+  contribution, so the chart shows one clear signal instead of several
+  near-duplicate (and sometimes contradictory) bars.
 - A **cost-sensitive decision threshold** (a missed defaulter costs more than a
   wrongly rejected good applicant), not a naive 0.5 cut-off.
+- A **risk-appetite slider**: the user sets the cost ratio (missing a defaulter
+  vs. rejecting a good customer) and the threshold re-tunes live, using a
+  cost-ratio→threshold grid precomputed at training time (for the full
+  population and the thin-file regime separately).
 - **Evaluation figures** generated at training time (ROC, precision-recall,
   confusion matrix, calibration, permutation importance) saved to `figures/`.
 - Input validation and graceful error handling.
@@ -90,14 +99,36 @@ Open the local URL Streamlit prints, fill in the applicant form, and click
 decision against the cost-sensitive threshold, and a ranked explanation of the
 features driving that applicant's score.
 
+### Screenshots
+
+**Main screen** — input form, with model metrics and the risk-appetite slider in
+the sidebar:
+
+![Main screen](docs/screenshots/app-home.jpg)
+
+**A scored decision** — predicted default probability, the cost-sensitive
+threshold, the approve / decline call, and a SHAP explanation (the external-score
+family shown as a single contribution):
+
+![Scored decision](docs/screenshots/app-decision.jpg)
+
+**Thin-file mode** — the same applicant with the external-score switch off. The
+model scores on alternative data only and uses the thin-file threshold; the
+explanation labels the missing external score and surfaces the behavioural
+features instead:
+
+![Thin-file decision](docs/screenshots/app-thinfile-decision.jpg)
+
+![Thin-file explanation](docs/screenshots/app-thinfile-explanation.jpg)
+
 ### Worked example
 
-With the default form values (income 150,000; credit 500,000; age 40;
-external score 2 = 0.5) the app returns a low-risk **APPROVE**. Lowering the
-external credit scores toward 0 pushes the probability up and flips the
-decision — a quick way to see the explanation respond.
-
-*(Add a screenshot here before submission.)*
+With the default form values and the risk appetite at 10:1, the applicant scores
+~48% default probability against a ~47% threshold, so the app returns
+**DECLINE / refer**. Lowering the risk appetite (e.g. 5:1) raises the threshold
+and flips borderline cases to **APPROVE**; turning the external-score switch off
+scores the same person as a thin-file applicant on alternative data only, which
+uses its own (lower) threshold.
 
 ## API key setup (optional LLM explanation layer)
 
@@ -150,15 +181,25 @@ and clear success / decline / error banners.
 
 - Uses only the main application table; AUC (~0.77) should rise after joining
   the bureau / previous-application tables.
-- The cost ratio (`COST_FN:COST_FP`) in `src/config.py` is a first estimate and
-  should be calibrated with realistic BNPL loss figures.
+- The cost ratio defaults to 10:1 and is adjustable in-app (5:1–15:1); the range
+  is grounded in rough BNPL unit economics but should be calibrated with a
+  lender's real loss data.
+- The single external-score input maps to all three bureau-score features, so in
+  the app they are perfectly correlated; the explanation groups them to avoid
+  misleading per-feature attributions, but a future version could expose the
+  three scores (and behavioural bureau features) separately.
 - SHAP explanations are computed per request and can be slow on the free tier.
 
 ## AI tool disclosure
 
-Generative AI (Claude Code) assisted with scaffolding the repository structure,
-the Streamlit UI, and drafting this README. All AI-assisted output was reviewed
-and revised by the team. *(Update this with the exact tasks before submission.)*
+Generative AI (Claude Code) was used as a coding and drafting assistant on these
+tasks: scaffolding the repository; writing and refactoring the training,
+feature-engineering, prediction and Streamlit-app code; debugging the
+Colab/Streamlit dependency-version mismatch; designing the cost-ratio grid and
+risk-appetite slider; diagnosing and fixing the SHAP multicollinearity in the
+explanation; and drafting this README. All AI-assisted output was reviewed,
+tested and revised by the team, which is responsible for the final content.
+*(Each member: add the specific parts you worked on before submission.)*
 
 ## Attribution
 

@@ -57,8 +57,12 @@ with st.sidebar:
     st.header("How to use")
     st.markdown(
         "1. Enter the applicant's details.\n"
-        "2. Click **Score applicant**.\n"
-        "3. Read the decision and the reasons behind it."
+        "2. For a **thin-file** applicant, untick *external credit score* to "
+        "score on alternative data only.\n"
+        "3. Set your **risk appetite** below — how much a missed default costs "
+        "versus a wrongly rejected good customer.\n"
+        "4. Click **Score applicant**, then read the decision and the reasons "
+        "behind it."
     )
     st.divider()
     st.header("Model")

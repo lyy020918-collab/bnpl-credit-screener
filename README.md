@@ -154,7 +154,7 @@ instead of committing them.
 | Model | ROC-AUC | PR-AUC |
 |---|---|---|
 | Logistic Regression | 0.752 | 0.235 |
-| Random Forest | 0.748 | 0.234 |
+| Random Forest | 0.749 | 0.234 |
 | **XGBoost (gradient boosting)** | **0.768** | **0.258** |
 | Baseline (majority class) | 0.500 | 0.081 |
 

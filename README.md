@@ -197,7 +197,7 @@ tasks: scaffolding the repository; writing and refactoring the training,
 feature-engineering, prediction and Streamlit-app code; debugging the
 Colab/Streamlit dependency-version mismatch; designing the cost-ratio grid and
 risk-appetite slider; diagnosing and fixing the SHAP multicollinearity in the
-explanation; and drafting this README. All AI-assisted output was reviewed,
+explanation. All AI-assisted output was reviewed,
 tested and revised by the team, which is responsible for the final content.
 *(Each member: add the specific parts you worked on before submission.)*
 

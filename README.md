@@ -5,6 +5,8 @@ It scores the default risk of **thin-file** Buy-Now-Pay-Later applicants with a
 gradient-boosting model and explains every decision, so a risk officer sees not
 just a score but *why*.
 
+**🔗 Live app:** https://bnpl-credit-screener-vttjmky8hvvkrijh7zl3tt.streamlit.app
+
 > ⚠️ **Prototype only — not a real lending tool.** Do not enter real personal
 > data. Decisions are illustrative and must not be used for actual credit calls.
 

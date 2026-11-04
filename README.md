@@ -110,25 +110,11 @@ features driving that applicant's score.
 
 ### Screenshots
 
-**Main screen** — input form, with model metrics and the risk-appetite slider in
-the sidebar:
+**Main screen** — the input form (no protected attributes such as gender or
+family status), with the model metrics and the risk-appetite slider in the
+sidebar:
 
 ![Main screen](docs/screenshots/app-home.jpg)
-
-**A scored decision** — predicted default probability, the cost-sensitive
-threshold, the approve / decline call, and a SHAP explanation (the external-score
-family shown as a single contribution):
-
-![Scored decision](docs/screenshots/app-decision.jpg)
-
-**Thin-file mode** — the same applicant with the external-score switch off. The
-model scores on alternative data only and uses the thin-file threshold; the
-explanation labels the missing external score and surfaces the behavioural
-features instead:
-
-![Thin-file decision](docs/screenshots/app-thinfile-decision.jpg)
-
-![Thin-file explanation](docs/screenshots/app-thinfile-explanation.jpg)
 
 ### Worked example
 
@@ -166,7 +152,7 @@ instead of committing them.
 |---|---|---|
 | Logistic Regression | 0.755 | 0.233 |
 | Random Forest | 0.749 | 0.234 |
-| **XGBoost (gradient boosting)** | **0.764** | **0.251** |
+| **XGBoost (gradient boosting)** | **0.763** | **0.251** |
 | Baseline (majority class) | 0.500 | 0.081 |
 
 Models are trained on a stratified **60/20/20 train / validation / test split**:

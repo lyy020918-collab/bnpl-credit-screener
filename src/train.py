@@ -27,9 +27,10 @@ from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassif
 from sklearn.dummy import DummyClassifier
 from sklearn.inspection import permutation_importance
 from sklearn.calibration import calibration_curve
+from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import (roc_auc_score, average_precision_score, accuracy_score,
                              recall_score, roc_curve, precision_recall_curve,
-                             confusion_matrix)
+                             confusion_matrix, brier_score_loss)
 
 from . import config as C
 from . import features as F
@@ -116,7 +117,10 @@ def main(data_path):
     raw = pd.read_csv(data_path)
     raw = F.clean(raw)
     y = raw[C.TARGET].values
-    raw_X = raw.drop(columns=[c for c in C.DROP_COLS if c in raw.columns])
+    # Drop target/ID columns AND the protected attributes (gender, family status)
+    # so no model can use them as inputs — see config.DROP_SENSITIVE.
+    raw_X = raw.drop(columns=[c for c in C.DROP_COLS + C.DROP_SENSITIVE
+                              if c in raw.columns])
     raw_cols = raw_X.columns.tolist()
 
     X = F.add_features(raw_X)                    # raw + engineered features
@@ -125,12 +129,18 @@ def main(data_path):
     cat_cols = X.select_dtypes(include=["object"]).columns.tolist()
     cat_mask = [True] * len(cat_cols) + [False] * len(num_cols)
 
-    Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, stratify=y,
-                                          random_state=42)
+    # Three-way split: train (fit models) / validation (choose thresholds +
+    # calibrate probabilities) / test (final, untouched evaluation). Because the
+    # thresholds and the calibrator are selected ONLY on validation, the numbers
+    # reported on the test set are not optimistically biased by tuning on them.
+    Xtr, Xtmp, ytr, ytmp = train_test_split(X, y, test_size=0.4, stratify=y,
+                                            random_state=42)
+    Xval, Xte, yval, yte = train_test_split(Xtmp, ytmp, test_size=0.5,
+                                            stratify=ytmp, random_state=42)
 
     scale_pos_weight = float((ytr == 0).sum() / max((ytr == 1).sum(), 1))
     models, gb_name = build_models(num_cols, cat_cols, cat_mask, scale_pos_weight)
-    proba, fitted = {}, {}
+    proba, fitted = {}, {}          # proba[name] = TEST-set probabilities
     for name, pipe in models.items():
         print(f"training {name} ...")
         pipe.fit(Xtr, ytr)
@@ -153,25 +163,55 @@ def main(data_path):
     real = ["LogisticRegression", "RandomForest", gb_name]
     metrics["best_model"] = max(real, key=lambda n: metrics["models"][n]["auc"])
 
-    # The app always uses the gradient-boosting model, so tune the threshold and
-    # report the thin-file performance on that model.
-    app_p = proba[gb_name]
+    # The app always uses the gradient-boosting model.
+    gb = fitted[gb_name]
 
-    thin = F.thin_file_mask(Xte).values
+    # ---- Probability calibration (fixes the risk-over-estimation issue) ----
+    # The class-weighted model ranks risk well (AUC) but its raw scores
+    # over-estimate the default probability. Fit an isotonic calibrator on the
+    # VALIDATION set only, then report calibration on the test set before and
+    # after. The app serves the calibrated probability (see predict.py), so the
+    # thresholds below are tuned in calibrated-probability space too.
+    val_p_raw = gb.predict_proba(Xval)[:, 1]
+    calibrator = IsotonicRegression(out_of_bounds="clip")
+    calibrator.fit(val_p_raw, yval)
+
+    te_p_raw = proba[gb_name]                      # raw test probabilities
+    app_p = calibrator.predict(te_p_raw)           # calibrated test probabilities
+    val_p_cal = calibrator.predict(val_p_raw)      # calibrated validation probs
+    metrics["brier_raw"] = float(brier_score_loss(yte, te_p_raw))
+    metrics["brier_calibrated"] = float(brier_score_loss(yte, app_p))
+
+    # ---- Subgroup performance on the TEST set ----
+    thin = F.thin_file_mask(Xte).values            # at most one external score
     metrics["thin_file_share"] = float(thin.mean())
     metrics["thin_file_auc"] = float(roc_auc_score(yte[thin], app_p[thin]))
     metrics["non_thin_file_auc"] = float(roc_auc_score(yte[~thin], app_p[~thin]))
     metrics["thin_file_default_rate"] = float(yte[thin].mean())
 
-    # Thin-file probabilities: simulate the app's "no external score" mode on the
-    # whole test set (force all external scores missing, recompute features). The
-    # threshold tuned on applicants who mostly HAVE external scores is too lenient
-    # when none are present, so thin-file decisions get their own threshold.
-    raw_te = Xte.drop(columns=[c for c in F.ENGINEERED if c in Xte.columns])
-    for c in F.EXT_COLS:
-        raw_te[c] = np.nan
-    Xte_tf = F.add_features(raw_te).reindex(columns=feature_order)
-    p_tf = fitted[gb_name].predict_proba(Xte_tf)[:, 1]
+    # The app's thin-file MODE withholds ALL external scores (COUNT == 0), which
+    # is stricter than the "<= 1 score" subset above. Report that exact subgroup
+    # separately so the headline thin-file number matches what the app does.
+    cnt0 = (Xte["EXT_SOURCE_COUNT"].values == 0)
+    metrics["no_ext_n"] = int(cnt0.sum())
+    metrics["no_ext_share"] = float(cnt0.mean())
+    if cnt0.sum() > 0 and len(np.unique(yte[cnt0])) > 1:
+        metrics["no_ext_auc"] = float(roc_auc_score(yte[cnt0], app_p[cnt0]))
+        metrics["no_ext_default_rate"] = float(yte[cnt0].mean())
+
+    # Thin-file probabilities: simulate the app's "no external score" mode by
+    # forcing every external score missing and recomputing features — on the
+    # validation set (to tune the thin-file threshold) and on the test set (to
+    # report it). Same calibrator as the full population.
+    def _thinfile_proba(Xsrc):
+        raw_s = Xsrc.drop(columns=[c for c in F.ENGINEERED if c in Xsrc.columns])
+        for c in F.EXT_COLS:
+            raw_s[c] = np.nan
+        Xs_tf = F.add_features(raw_s).reindex(columns=feature_order)
+        return calibrator.predict(gb.predict_proba(Xs_tf)[:, 1])
+
+    val_p_tf = _thinfile_proba(Xval)
+    p_tf = _thinfile_proba(Xte)                    # calibrated test thin-file probs
 
     # Risk-appetite grid: for every cost ratio the app's slider exposes, store the
     # cost-optimal threshold for the full population and for the thin-file regime,
@@ -179,14 +219,18 @@ def main(data_path):
     # app looks these up at runtime instead of re-tuning on data it does not have.
     def _summary(y_true, p, th):
         pr = (p >= th).astype(int)
-        return {"threshold": round(th, 4),
+        return {"threshold": round(float(th), 4),
                 "approval_rate": float((pr == 0).mean()),
                 "recall": float(recall_score(y_true, pr))}
 
+    # For each cost ratio: choose the threshold on the VALIDATION set, then
+    # measure the approval rate / recall it yields on the TEST set.
     grid = {"global": {}, "thin_file": {}}
     for r in C.RISK_RATIOS:
-        grid["global"][str(r)] = _summary(yte, app_p, cost_sensitive_threshold(yte, app_p, r))
-        grid["thin_file"][str(r)] = _summary(yte, p_tf, cost_sensitive_threshold(yte, p_tf, r))
+        th_g = cost_sensitive_threshold(yval, val_p_cal, r)
+        th_t = cost_sensitive_threshold(yval, val_p_tf, r)
+        grid["global"][str(r)] = _summary(yte, app_p, th_g)
+        grid["thin_file"][str(r)] = _summary(yte, p_tf, th_t)
     metrics["threshold_grid"] = grid
     metrics["risk_ratios"] = C.RISK_RATIOS
     metrics["default_risk_ratio"] = C.DEFAULT_RISK_RATIO
@@ -206,8 +250,13 @@ def main(data_path):
     # ---- Figures ----
     _fig_roc(yte, proba, real)
     _fig_pr(yte, proba, real)
-    _fig_confusion(yte, pred, gb_name, threshold)
-    _fig_calibration(yte, app_p, gb_name)
+    _fig_confusion(yte, pred, gb_name, threshold,
+                   subtitle="full test set", fname="confusion_matrix.png")
+    pred_tf = (p_tf >= thin_threshold).astype(int)
+    _fig_confusion(yte, pred_tf, gb_name, thin_threshold,
+                   subtitle="thin-file mode, external scores withheld",
+                   fname="confusion_matrix_thinfile.png")
+    _fig_calibration(yte, te_p_raw, app_p, gb_name)
     _fig_perm_importance(fitted[gb_name], Xte, yte, gb_name)
     try:
         _fig_shap(fitted[gb_name], Xtr, Xte, cat_cols, gb_name)
@@ -234,7 +283,9 @@ def main(data_path):
     joblib.dump(fitted[gb_name], C.MODEL_GB)
     joblib.dump(fitted["LogisticRegression"], C.MODEL_LR)
     joblib.dump(fitted["RandomForest"], C.MODEL_RF)
+    joblib.dump(calibrator, C.MODEL_CAL)
     joblib.dump({
+        "calibrated": True,
         "feature_order": feature_order,
         "raw_cols": raw_cols,
         "num_cols": num_cols,
@@ -282,7 +333,7 @@ def _fig_pr(y, proba, names):
     plt.tight_layout(); plt.savefig(FIG_DIR / "pr_curves.png", dpi=130); plt.close()
 
 
-def _fig_confusion(y, pred, name, th):
+def _fig_confusion(y, pred, name, th, subtitle=None, fname="confusion_matrix.png"):
     cm = confusion_matrix(y, pred)
     plt.figure(figsize=(4.5, 4))
     plt.imshow(cm, cmap="Blues")
@@ -292,17 +343,22 @@ def _fig_confusion(y, pred, name, th):
                      color="white" if cm[i, j] > cm.max() / 2 else "black")
     plt.xticks([0, 1], ["Approve", "Decline"]); plt.yticks([0, 1], ["No default", "Default"])
     plt.xlabel("Predicted"); plt.ylabel("Actual")
-    plt.title(f"Confusion matrix — {name}\n(threshold={th:.2f})")
-    plt.tight_layout(); plt.savefig(FIG_DIR / "confusion_matrix.png", dpi=130); plt.close()
+    title = f"Confusion matrix — {name}\n(threshold={th:.2f}"
+    title += f"; {subtitle})" if subtitle else ")"
+    plt.title(title)
+    plt.tight_layout(); plt.savefig(FIG_DIR / fname, dpi=130); plt.close()
 
 
-def _fig_calibration(y, p, name):
-    frac, mean_pred = calibration_curve(y, p, n_bins=10, strategy="quantile")
+def _fig_calibration(y, p_raw, p_cal, name):
+    """Calibration on the test set, raw model vs. isotonic-calibrated."""
     plt.figure(figsize=(5, 5))
-    plt.plot(mean_pred, frac, "o-", label=name)
+    for p, lab, style in [(p_raw, f"{name} — raw", "o-"),
+                          (p_cal, f"{name} — isotonic", "s-")]:
+        frac, mean_pred = calibration_curve(y, p, n_bins=10, strategy="quantile")
+        plt.plot(mean_pred, frac, style, label=lab)
     plt.plot([0, 1], [0, 1], "k--", lw=1, label="Perfectly calibrated")
     plt.xlabel("Mean predicted probability"); plt.ylabel("Observed default rate")
-    plt.title("Calibration curve"); plt.legend(fontsize=8)
+    plt.title("Calibration curve (test set)"); plt.legend(fontsize=8)
     plt.tight_layout(); plt.savefig(FIG_DIR / "calibration.png", dpi=130); plt.close()
 
 

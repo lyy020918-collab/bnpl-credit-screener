@@ -20,10 +20,19 @@ DATA_FILE = DATA_DIR / "application_train.csv"
 MODEL_GB = MODELS_DIR / "model_gb.joblib"
 MODEL_LR = MODELS_DIR / "model_lr.joblib"
 MODEL_RF = MODELS_DIR / "model_rf.joblib"
+MODEL_CAL = MODELS_DIR / "calibrator.joblib"   # isotonic probability calibrator
 METADATA = MODELS_DIR / "metadata.joblib"
 
 TARGET = "TARGET"
 DROP_COLS = ["TARGET", "SK_ID_CURR"]
+
+# Legally protected attributes we deliberately DROP from every model's inputs.
+# Gender and marital/family status are protected characteristics in credit
+# decisions (e.g. under the US Equal Credit Opportunity Act). An earlier version
+# fed CODE_GENDER to the model and SHAP showed it was a prominent driver, so we
+# remove these columns entirely before training to avoid direct discrimination.
+# They are excluded from the training matrix AND from the app's input form.
+DROP_SENSITIVE = ["CODE_GENDER", "NAME_FAMILY_STATUS"]
 
 # Cost ratio for the cost-sensitive decision threshold.
 # A missed defaulter (false negative) is assumed to cost C_FN times as much as
@@ -63,9 +72,8 @@ EXPOSED_FEATURES = [
      "min": 0.0, "max": 1.0, "step": 0.01, "default": 0.5},
     {"col": "CNT_CHILDREN", "label": "Number of children", "kind": "number",
      "min": 0, "max": 20, "step": 1, "default": 0},
-    {"col": "CODE_GENDER", "label": "Gender", "kind": "category"},
+    # CODE_GENDER and NAME_FAMILY_STATUS removed on purpose — see DROP_SENSITIVE.
     {"col": "NAME_EDUCATION_TYPE", "label": "Education", "kind": "category"},
-    {"col": "NAME_FAMILY_STATUS", "label": "Family status", "kind": "category"},
     {"col": "NAME_INCOME_TYPE", "label": "Income type", "kind": "category"},
     {"col": "NAME_CONTRACT_TYPE", "label": "Contract type", "kind": "category"},
 ]

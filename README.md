@@ -27,6 +27,12 @@ just a score but *why*.
   the screener is meant to serve.
 - **Thin-file mode**: a toggle to score an applicant with *no* external credit
   score, on alternative and behavioural data only — the core use case.
+- **Protected attributes excluded**: gender and marital/family status are left
+  out of the model inputs, so a legally protected characteristic is never used in
+  a decision.
+- **Probability calibration**: the gradient-boosting scores are isotonic-calibrated
+  on a validation split, so the probability shown is on the same scale as the
+  decision threshold.
 - **Per-decision explanation** (SHAP when installed; a model-agnostic local
   fallback otherwise), tied to the applicant's own inputs. The three bureau
   scores and their summary stats are collapsed into one "external credit score"
@@ -39,7 +45,8 @@ just a score but *why*.
   cost-ratio→threshold grid precomputed at training time (for the full
   population and the thin-file regime separately).
 - **Evaluation figures** generated at training time (ROC, precision-recall,
-  confusion matrix, calibration, permutation importance) saved to `figures/`.
+  confusion matrix for the full population and for thin-file mode, calibration
+  before/after, permutation importance) saved to `figures/`.
 - Input validation and graceful error handling.
 
 ## Project structure
@@ -125,12 +132,12 @@ features instead:
 
 ### Worked example
 
-With the default form values and the risk appetite at 10:1, the applicant scores
-~48% default probability against a ~47% threshold, so the app returns
-**DECLINE / refer**. Lowering the risk appetite (e.g. 5:1) raises the threshold
-and flips borderline cases to **APPROVE**; turning the external-score switch off
-scores the same person as a thin-file applicant on alternative data only, which
-uses its own (lower) threshold.
+With the risk appetite at 10:1, the app compares the applicant's **calibrated**
+default probability against a decision threshold of about 0.09 and returns an
+**APPROVE** or **DECLINE / refer** call. Lowering the risk appetite (e.g. 5:1)
+raises the threshold, so more borderline cases are approved; turning the
+external-score switch off scores the same person as a thin-file applicant on
+alternative data only, using the thin-file threshold (about 0.08).
 
 ## API key setup (optional LLM explanation layer)
 
@@ -146,6 +153,8 @@ instead of committing them.
 
 ## Deployment (public URL)
 
+**Live app:** https://bnpl-credit-screener-vttjmky8hvvkrijh7zl3tt.streamlit.app
+
 1. Push this repo to **public GitHub**.
 2. On [Streamlit Community Cloud](https://streamlit.io/cloud), create an app
    pointing at `app.py`.
@@ -155,15 +164,21 @@ instead of committing them.
 
 | Model | ROC-AUC | PR-AUC |
 |---|---|---|
-| Logistic Regression | 0.752 | 0.235 |
+| Logistic Regression | 0.755 | 0.233 |
 | Random Forest | 0.749 | 0.234 |
-| **XGBoost (gradient boosting)** | **0.768** | **0.258** |
+| **XGBoost (gradient boosting)** | **0.764** | **0.251** |
 | Baseline (majority class) | 0.500 | 0.081 |
 
-Default rate is 8.1%, so majority-class accuracy is 91.9% — which is why we use
-AUC, not accuracy. On the **thin-file subset** (12% of applicants, 9.8% default
-rate) AUC is 0.748 versus 0.770 on the rest, showing thin-file applicants are
-genuinely harder to score — the problem this tool targets.
+Models are trained on a stratified **60/20/20 train / validation / test split**:
+thresholds and the probability calibrator are chosen on the validation set, and
+every number here is measured on the untouched test set. Default rate is 8.1%,
+so majority-class accuracy is 91.9% — which is why we use AUC, not accuracy. On
+the **thin-file subset** (12% of applicants, 9.4% default rate) AUC is 0.746
+versus 0.765 on the rest, showing thin-file applicants are genuinely harder to
+score — the problem this tool targets. The model is isotonic-calibrated on the
+validation split (Brier score 0.169 → 0.068), and the app serves the calibrated
+probability. Protected attributes (gender and marital/family status) are
+deliberately excluded from the model inputs.
 
 ## Performance
 
@@ -201,7 +216,6 @@ Colab/Streamlit dependency-version mismatch; designing the cost-ratio grid and
 risk-appetite slider; diagnosing and fixing the SHAP multicollinearity in the
 explanation. All AI-assisted output was reviewed,
 tested and revised by the team, which is responsible for the final content.
-
 
 ## Attribution
 

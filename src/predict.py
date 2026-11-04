@@ -48,9 +48,14 @@ def label(col: str) -> str:
 def load_artifacts():
     global _ARTIFACTS
     if _ARTIFACTS is None:
+        try:
+            cal = joblib.load(C.MODEL_CAL)       # isotonic probability calibrator
+        except Exception:
+            cal = None                            # older artifacts: serve raw probs
         _ARTIFACTS = {
             "gb": joblib.load(C.MODEL_GB),
             "lr": joblib.load(C.MODEL_LR),
+            "cal": cal,
             "meta": joblib.load(C.METADATA),
         }
     return _ARTIFACTS
@@ -105,7 +110,11 @@ def predict(user_inputs: dict, thin_file: bool = False, risk_ratio=None):
     art = load_artifacts()
     meta = art["meta"]
     X1 = build_feature_row(user_inputs, meta)
-    proba = float(art["gb"].predict_proba(X1)[:, 1][0])
+    raw = float(art["gb"].predict_proba(X1)[:, 1][0])
+    # Serve the calibrated probability so the displayed % and the decision
+    # threshold live in the same (calibrated) probability space.
+    cal = art.get("cal")
+    proba = float(cal.predict([raw])[0]) if cal is not None else raw
     threshold = resolve_threshold(meta, thin_file=thin_file, risk_ratio=risk_ratio)
     decision = "DECLINE / refer" if proba >= threshold else "APPROVE"
     return {"proba": proba, "threshold": threshold, "decision": decision, "X1": X1}

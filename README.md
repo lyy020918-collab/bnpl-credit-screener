@@ -116,6 +116,18 @@ sidebar:
 
 ![Main screen](docs/screenshots/app-home.jpg)
 
+**A scored decision** — the calibrated default probability, the cost-sensitive
+threshold, the approve / decline call, and the SHAP explanation. The external
+credit score is the strongest driver, and no protected attribute appears:
+
+![Scored decision](docs/screenshots/app-decision.jpg)
+
+**Thin-file mode** — the same applicant with the external-score switch off. The
+model scores on alternative data only and uses the (lower) thin-file threshold;
+the explanation now rests on behavioural features such as employment and age:
+
+![Thin-file decision](docs/screenshots/app-thinfile.jpg)
+
 ### Worked example
 
 With the risk appetite at 10:1, the app compares the applicant's **calibrated**
@@ -151,7 +163,7 @@ instead of committing them.
 | Model | ROC-AUC | PR-AUC |
 |---|---|---|
 | Logistic Regression | 0.755 | 0.233 |
-| Random Forest | 0.749 | 0.234 |
+| Random Forest | 0.750 | 0.234 |
 | **XGBoost (gradient boosting)** | **0.763** | **0.251** |
 | Baseline (majority class) | 0.500 | 0.081 |
 
